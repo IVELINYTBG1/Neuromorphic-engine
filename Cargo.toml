@@ -1,0 +1,12 @@
+[package]
+name = "neuromorphic-engine"
+version = "0.1.0"
+edition = "2021"
+description = "A bio-faithful neuromorphic substrate: local, backprop-free, neuromodulator-gated learning on the CPU. Zero dependencies."
+license = "MIT"
+
+[lib]
+name = "neuromorphic_engine"
+path = "src/lib.rs"
+
+[workspace]
