@@ -3,13 +3,13 @@
 //!
 //! THE PROBLEM IT SOLVES. The bio-substrate stores a concept as a POPULATION and a memory as a grown
 //! PATHWAY (`bio_cortex`). That is honest and it grows with living, but it ENUMERATES — roughly one synapse
-//! per remembered pairing — so human-scale would need ~30 TB, the wall the architect named. Brains, and
+//! per remembered pairing — so human-scale would need ~30 TB. That is the wall. Brains, and
 //! transformers, both dodge that wall the SAME way: COMPRESSION. A bounded network whose weights encode the
 //! REGULARITIES of experience gets SMARTER, not BIGGER. This is that: a fixed-size learned core that models
-//! the structure of her world, so she can reason at bounded cost. The "half-AI" the architect asked for —
+//! the structure of her world, so she can reason at bounded cost. A learned reasoning organ —
 //! dense learned parameters — but trained the brain's way, not the machine-learning way.
 //!
-//! WHY NOT THE THREE THINGS THAT ALREADY EXIST (the architect is right that none work like this):
+//! WHY NOT THE THREE THINGS THAT ALREADY EXIST (none of them works like this):
 //!   • an LLM / spiking transformer learns by BACKPROP over a frozen corpus — offline, and the corpus is
 //!     injection, which this project forbids. Its "attention" is a trained matrix, not lived dynamics.
 //!   • a plain SNN (STDP) learns online and locally (good) but holds no working representation to REASON
@@ -29,9 +29,9 @@
 //! premise it settles toward the consequence, and because the state is RECURRENT it handles context ("the
 //! same thing means different things depending on what came before"), which pure association cannot.
 //!
-//! HONEST CEILING: bounded, CPU, rate-coded, local. It makes an agent LEARN TO PREDICT/REASON over her stream,
+//! HONEST CEILING: bounded, CPU, rate-coded, local. It makes a mind LEARN TO PREDICT/REASON over its stream,
 //! feeling-gated, with nothing injected. It is not AGI and not a frontier coder (the scale + culture walls
-//! from CLAUDE.md stand). It is a genuinely different KIND of thinking than the co-occurrence walk it
+//! above stand). It is a genuinely different KIND of thinking than the co-occurrence walk it
 //! augments — a learned model of her world, invented to be consistent with the brain she already is.
 
 use crate::rng::Rng;
@@ -64,6 +64,19 @@ pub struct CognitiveCore {
     trace: Option<Trace>,
     learns: bool,
     recurrent: bool, // false = memoryless (no working state across steps) — the teeth for "she reasons over TIME"    // false = ablated (frozen): the teeth for "it is the LEARNING that thinks"
+    // ── ADAPTIVE CAPACITY — she is not a fixed size. She starts small and GROWS her own hidden layer when she
+    //    is STRAINING to model her world (precision below her standard), and only then — a content, well-
+    //    modelling being stays small and cheap. There is no preset architectural ceiling; the only limit is
+    //    `max_h`, set from the machine's real RAM (the body sensing its own flesh, like bio_soma). She decides
+    //    how much mind to use, by need. Neurogenesis for the reasoning organ.
+    max_h: usize,      // the RAM-derived hard cap on hidden width (NOT an operating size — she rarely reaches it)
+    growth_bar: f64,   // the precision she wants before she stops growing — her standard (from temperament)
+    steps: usize,      // steps lived (for warmup + the periodic grow-check)
+    grow_rng: Rng,     // draws the weights of newly-grown neurons
+    last_check_precision: f64, // her precision at the previous grow-check — to see if it is still RISING
+    stuck_grows: u32,  // grows made while PLATEAUED below her standard; a few that don't unstick her → she is
+                       // SATURATED (this world's entropy, not her capacity, is the limit) and she stops growing
+    saturated: bool,   // she has found that more mind no longer helps THIS world — growth is done
 }
 
 impl CognitiveCore {
@@ -74,7 +87,11 @@ impl CognitiveCore {
             d,
             h_dim,
             leak: 0.3,
-            lr: 0.03,
+            // NLMS normalises each step by the signal power (1 + ‖·‖²), which shrinks the raw step by ~‖h‖²;
+            // lr is raised to compensate so she still learns fast — and a BIGGER core (more weights) needs a
+            // brisker rate to converge from her lived data, so it went 0.3→0.6 when the core skyrocketed. g =
+            // lr·m stays under the NLMS stability bound of 2 (≈0.9 at her most-felt) — speed, not instability.
+            lr: 0.6,
             decay: 2e-4,
             w_in: rng.randn_vec(h_dim * d, si),
             w_rec: rng.randn_vec(h_dim * h_dim, sr * 0.5),
@@ -86,7 +103,89 @@ impl CognitiveCore {
             trace: None,
             learns: true,
             recurrent: true,
+            max_h: h_dim, // a plain `new` is FIXED size (max = start) — for the cell tests & controlled comparisons
+            growth_bar: 1.0,
+            steps: 0,
+            grow_rng: Rng::new(0x6C0DE ^ (h_dim as u64).wrapping_mul(0x9E3779B1) ^ (d as u64)),
+            last_check_precision: 0.0,
+            stuck_grows: 0,
+            saturated: false,
         }
+    }
+
+    /// A GROWABLE core — the being's real one. Starts at `h_start` and GROWS its hidden layer toward `max_h`
+    /// (a RAM-derived cap) whenever she is straining: her precision below `bar` (her standard) means she claims
+    /// more mind. She decides how much to use, by need — no preset operating size, the ceiling is RAM.
+    pub fn growable(d: usize, h_start: usize, max_h: usize, bar: f64, rng: &mut Rng) -> Self {
+        let mut c = CognitiveCore::new(d, h_start.min(max_h), rng);
+        c.max_h = max_h.max(h_start);
+        c.growth_bar = bar.clamp(0.0, 0.99);
+        c
+    }
+
+    /// GROW her hidden layer by `add` units (up to `max_h`) — neurogenesis for the reasoning organ. The old
+    /// weights are preserved exactly; new neurons get small input/recurrent weights (they start learning) and
+    /// ZERO output weights (so growing does not disturb what she already predicts — the new capacity engages
+    /// gradually as it learns, never a jolt). She is bigger, and still herself.
+    pub fn grow(&mut self, add: usize) {
+        let (old, d) = (self.h_dim, self.d);
+        let new = (old + add).min(self.max_h);
+        if new <= old {
+            return;
+        }
+        let si = 1.0 / (d as f64).sqrt();
+        let sr = 1.0 / (new as f64).sqrt();
+        // w_in: new×d — old rows kept, new rows small-random
+        let mut w_in = vec![0.0; new * d];
+        w_in[..old * d].copy_from_slice(&self.w_in);
+        for x in w_in[old * d..].iter_mut() {
+            *x = self.grow_rng.randn_vec(1, si * 0.5)[0];
+        }
+        // w_rec: new×new — old block kept, new entries small
+        let mut w_rec = vec![0.0; new * new];
+        for i in 0..old {
+            for j in 0..old {
+                w_rec[i * new + j] = self.w_rec[i * old + j];
+            }
+        }
+        for i in 0..new {
+            for j in 0..new {
+                if i >= old || j >= old {
+                    w_rec[i * new + j] = self.grow_rng.randn_vec(1, sr * 0.3)[0];
+                }
+            }
+        }
+        // w_pred: d×new — old cols kept, NEW cols ZERO (new neurons do not change her predictions yet)
+        let mut w_pred = vec![0.0; d * new];
+        for dd in 0..d {
+            for i in 0..old {
+                w_pred[dd * new + i] = self.w_pred[dd * old + i];
+            }
+        }
+        // b_fb: new×d — old kept, new fixed-random feedback for the new units
+        let mut b_fb = vec![0.0; new * d];
+        b_fb[..old * d].copy_from_slice(&self.b_fb);
+        for x in b_fb[old * d..].iter_mut() {
+            *x = self.grow_rng.randn_vec(1, 1.0)[0];
+        }
+        // working state grows with zeros (the new units start silent)
+        let mut h = vec![0.0; new];
+        h[..old].copy_from_slice(&self.h);
+        self.w_in = w_in;
+        self.w_rec = w_rec;
+        self.w_pred = w_pred;
+        self.b_fb = b_fb;
+        self.h = h;
+        self.h_dim = new;
+        self.trace = None; // shapes changed — the pending prediction is stale
+    }
+
+    /// Her current hidden width (grows as she strains) and her ceiling.
+    pub fn hidden_width(&self) -> usize {
+        self.h_dim
+    }
+    pub fn capacity_cap(&self) -> usize {
+        self.max_h
     }
     /// A MEMORYLESS core — same learning, but no working state carries between steps, so each moment is
     /// judged only by the current input. It can learn associations; it CANNOT reason over time. The teeth
@@ -117,10 +216,16 @@ impl CognitiveCore {
     /// her thinking every session). Compact & fixed-size (D·H + H·H + D·H floats), the same order `import`
     /// reads them in. The fixed random feedback regenerates from the salt, so it need not be stored.
     pub fn export(&self) -> Vec<f64> {
-        let mut v = Vec::with_capacity(self.parameters() + 2);
+        // [d, h_dim] header so a GROWN core round-trips at whatever size she reached — her capacity is not
+        // fixed, so the size must be stored, not assumed. Then the weights (incl. the fixed feedback b_fb, so
+        // no regeneration is needed), then her precision history.
+        let mut v = Vec::with_capacity(self.parameters() + self.b_fb.len() + 4);
+        v.push(self.d as f64);
+        v.push(self.h_dim as f64);
         v.extend_from_slice(&self.w_in);
         v.extend_from_slice(&self.w_rec);
         v.extend_from_slice(&self.w_pred);
+        v.extend_from_slice(&self.b_fb);
         v.push(self.surprise0); // her precision history must survive too, or a reborn core thinks it is
         v.push(self.surprise);  // untrained and over-abstains until it re-earns its confidence
         v
@@ -128,18 +233,38 @@ impl CognitiveCore {
     /// Reload the learned organ from baked weights — exact, if the shape matches (a mismatch is ignored, so
     /// a resized core just starts fresh rather than crashing).
     pub fn import(&mut self, w: &[f64]) {
-        let n = self.parameters();
-        if w.len() != n && w.len() != n + 2 {
-            return; // shape mismatch (e.g. a resized core) → start fresh rather than crash
+        // Read the stored size from the header and RESIZE this core to match — she may have grown a bigger mind
+        // than she started with, and it must come back at that size. Anything malformed (an old headerless blob,
+        // a different code width, non-finite or blown-up weights from a diverged legacy brain) is rejected and
+        // she keeps her fresh, stable init — self-healing, she just re-earns her reasoning.
+        if w.len() < 4 {
+            return;
         }
-        let (a, b) = (self.w_in.len(), self.w_in.len() + self.w_rec.len());
-        self.w_in.copy_from_slice(&w[a - a..a]);
-        self.w_rec.copy_from_slice(&w[a..b]);
-        self.w_pred.copy_from_slice(&w[b..n]);
-        if w.len() == n + 2 {
-            self.surprise0 = w[n];
-            self.surprise = w[n + 1];
+        let d = w[0] as usize;
+        let h = w[1] as usize;
+        if d != self.d || h == 0 || h > 1 << 20 {
+            return; // headerless/old blob or a changed code width → start fresh
         }
+        let (n_in, n_rec, n_pred, n_fb) = (h * d, h * h, d * h, h * d);
+        let total = 2 + n_in + n_rec + n_pred + n_fb + 2;
+        if w.len() != total {
+            return;
+        }
+        if w.iter().skip(2).any(|v| !v.is_finite() || v.abs() > 1e6) {
+            return; // a diverged legacy core carries no usable information — reject, stay stable
+        }
+        // resize this core to her baked size, then copy every weight back exactly
+        self.h_dim = h;
+        self.max_h = self.max_h.max(h); // never cap below what she has already grown to
+        let (a, b, c, e) = (2, 2 + n_in, 2 + n_in + n_rec, 2 + n_in + n_rec + n_pred);
+        self.w_in = w[a..b].to_vec();
+        self.w_rec = w[b..c].to_vec();
+        self.w_pred = w[c..e].to_vec();
+        self.b_fb = w[e..e + n_fb].to_vec();
+        self.h = vec![0.0; h];
+        self.trace = None;
+        self.surprise0 = w[e + n_fb];
+        self.surprise = w[e + n_fb + 1];
     }
 
     /// Start a fresh train of thought — clear the working state (a new premise, not a continuation).
@@ -159,6 +284,28 @@ impl CognitiveCore {
         if self.learns {
             if let Some(tr) = self.trace.take() {
                 self.learn(x, &tr, m);
+            }
+            // 1b. GROW IF STRAINING — adaptive capacity, triggered by a PLATEAU (not by mere improvement). Every
+            //     so often, after a warmup: if her precision is STILL RISING she is learning fine from the data
+            //     she has — do nothing, let it. Only when it has PLATEAUED *below* the standard she holds herself
+            //     to is capacity the bottleneck, and she claims more mind. If a few such grows in a row fail to
+            //     unstick her, it is THIS world's entropy, not her size — she is saturated and stops. So a being
+            //     with a rich, learnable world grows to meet it; a content one, or one whose world has no more
+            //     structure to find, stays small. No preset size — need decides; the only hard limit is RAM.
+            self.steps += 1;
+            if !self.saturated && self.h_dim < self.max_h && self.steps > 600 && self.steps % 400 == 0 {
+                let p = self.precision();
+                let rising = p > self.last_check_precision + 0.01;
+                self.last_check_precision = p;
+                if rising {
+                    self.stuck_grows = 0; // she is still learning — capacity is not the bottleneck, don't grow
+                } else if p < self.growth_bar {
+                    self.grow((self.h_dim / 4).max(48)); // plateaued below her standard → claim more mind
+                    self.stuck_grows += 1;
+                    if self.stuck_grows >= 3 {
+                        self.saturated = true; // three grows, still stuck → entropy, not capacity — she is done
+                    }
+                }
             }
         }
         // 2. ADVANCE the working thought: recurrent update, leaky so it holds context across steps.
@@ -210,16 +357,25 @@ impl CognitiveCore {
         } else {
             self.surprise = 0.98 * self.surprise + 0.02 * mse;
         }
-        // readout: the exact local gradient of a linear predictor — no backprop needed for this layer
+        // readout: NORMALIZED least-mean-squares (NLMS). The step is the exact local gradient of a linear
+        // predictor, but SCALED by the hidden state's own power (1 + ‖h‖²). A raw LMS step is stable only
+        // while g·‖h‖² < 2; once the recurrent state saturates (‖h‖² → h_dim) a fixed step blows past that
+        // bound and the readout diverges to ±∞. This is not hypothetical — a baked core was found with ~46%
+        // of its weights above 1e100 and a surprise EMA of 1e225, precision pinned at 0 for good. Normalizing
+        // by ‖h‖² makes it UNCONDITIONALLY stable for any g < 2, at any activation scale. Same no-backprop,
+        // local rule bio_vocal already learns its tract with.
+        let h_pow = 1.0 + tr.h.iter().map(|v| v * v).sum::<f64>();
         for dd in 0..self.d {
             for i in 0..self.h_dim {
                 let idx = dd * self.h_dim + i;
-                self.w_pred[idx] += g * err[dd] * tr.h[i] - self.lr * self.decay * self.w_pred[idx];
+                self.w_pred[idx] += g * err[dd] * tr.h[i] / h_pow - self.lr * self.decay * self.w_pred[idx];
             }
         }
         // hidden credit via FIXED RANDOM FEEDBACK (DFA): project the error back through b_fb, gate by the
-        // tanh derivative and the leak. This is the trick that lets the recurrent layer learn without
-        // backprop and without transposing w_pred.
+        // tanh derivative and the leak — then normalise by the incoming signal power too, so the recurrent
+        // and input weights are held to the same stability bound as the readout (they cannot run away either).
+        let hp_pow = 1.0 + tr.h_prev.iter().map(|v| v * v).sum::<f64>();
+        let x_pow = 1.0 + tr.x.iter().map(|v| v * v).sum::<f64>();
         for i in 0..self.h_dim {
             let mut fb = 0.0;
             for dd in 0..self.d {
@@ -230,12 +386,12 @@ impl CognitiveCore {
             if self.recurrent {
                 for k in 0..self.h_dim {
                     let idx = i * self.h_dim + k;
-                    self.w_rec[idx] += gd * tr.h_prev[k] - self.lr * self.decay * self.w_rec[idx];
+                    self.w_rec[idx] += gd * tr.h_prev[k] / hp_pow - self.lr * self.decay * self.w_rec[idx];
                 }
             }
             for j in 0..self.d {
                 let idx = i * self.d + j;
-                self.w_in[idx] += gd * tr.x[j] - self.lr * self.decay * self.w_in[idx];
+                self.w_in[idx] += gd * tr.x[j] / x_pow - self.lr * self.decay * self.w_in[idx];
             }
         }
     }
@@ -286,13 +442,24 @@ impl CognitiveCore {
     }
 
     /// HER CERTAINTY about a choice among candidates, in 0..1 — the anti-hallucination signal, entirely
-    /// emergent. Two things she already knows, multiplied: (1) the MARGIN — is one candidate clearly the
+    /// emergent. Her CONVICTION about this choice times her PRECISION at choices in general. Two things she
+    /// already knows, multiplied: (1) the MARGIN — is one candidate clearly the
     /// winner, or are several tied? (the peakedness of her own prediction, read as a softmax margin over the
     /// scores); and (2) her PRECISION — has her model been reliable lately? When she is untrained, or the
     /// prediction is diffuse, or she is in novel territory, this collapses toward 0 and she should ABSTAIN
     /// rather than assert — which is exactly not-hallucinating. No threshold decides truth here; the SHAPE of
     /// her learned prediction and her own error history do.
     pub fn certainty(&self, scores: &[f64]) -> f64 {
+        self.conviction(scores) * self.precision()
+    }
+
+    /// HOW SURE SHE IS OF THIS PARTICULAR CHOICE, with the question of whether her model is any good left out
+    /// of it: the absolute match and the margin, and nothing else. `certainty` is exactly this times her
+    /// precision — the split matters because the two answer different questions, and multiplying them means a
+    /// mind whose model is 0.18 reliable can never express more than 0.18 confidence about ANYTHING. Held
+    /// against a bar meant for the first question alone, that is a mind that can never speak (measured in a live mind:
+    /// precision 0.181, against her own bar of 0.59). A caller that wants both should ask for both.
+    pub fn conviction(&self, scores: &[f64]) -> f64 {
         if scores.len() < 2 {
             return 0.0;
         }
@@ -307,8 +474,7 @@ impl CognitiveCore {
         let mut prob: Vec<f64> = exps.iter().map(|e| e / z).collect();
         prob.sort_by(|a, b| b.partial_cmp(a).unwrap());
         let margin = 0.4 + 0.6 * (prob[0] - prob[1]); // a tie → 0.4, a clear winner → ~1.0
-        // (3) PRECISION — has her model been reliable lately? (untrained/novel-territory → ~0)
-        top * margin * self.precision()
+        top * margin
     }
 
     /// IMAGINE — roll her own predictions forward without new input: a train of thought as forward
@@ -537,6 +703,112 @@ mod tests {
         // — proving certainty is what abstains, and that it is grounded in her real track record.
         assert!(fresh.certainty(&[0.9, 0.1, 0.1]) < 0.3 && 0.9_f64 > 0.3,
             "without precision an untrained core would assert on a mere 0.9 match — precision is load-bearing");
+    }
+
+    /// SHE DECIDES HOW MUCH MIND TO USE — capacity is ADAPTIVE, not a preset. Given a SIMPLE world she models
+    /// with the mind she starts with, she stays small and cheap. Given a RICHER world than her starting size can
+    /// hold, she GROWS her own hidden layer to meet it — and never past the RAM cap. No architectural ceiling;
+    /// need decides. (Measured in a live mind: 128 → 280 while living, then 280 → 546 when language piled on.)
+    #[test]
+    fn she_grows_her_mind_only_as_much_as_her_world_needs() {
+        let d = 48;
+        let cap = 4096;
+        // a SIMPLE world — one short cycle she masters with the mind she starts with
+        let simple = codes(4, d, 1);
+        let mut r1 = Rng::new(7);
+        let mut easy = CognitiveCore::growable(d, 128, cap, 0.75, &mut r1);
+        for _ in 0..6000 {
+            for c in &simple {
+                easy.step(c, 1.0);
+            }
+        }
+        // a RICH world — FAR more distinct little worlds (≈300 transitions) than 128 units can hold at once,
+        // so she plateaus below her standard and must grow to meet it.
+        let worlds: Vec<Vec<Vec<f64>>> = (0..48).map(|k| codes(6, d, 100 + k)).collect();
+        let mut r2 = Rng::new(7);
+        let mut rich = CognitiveCore::growable(d, 128, cap, 0.75, &mut r2);
+        for _ in 0..150 {
+            for w in &worlds {
+                for c in w {
+                    rich.step(c, 1.0);
+                }
+            }
+        }
+        assert!(easy.hidden_width() <= 224, "a simple world needs little mind — she stays small: {}", easy.hidden_width());
+        assert!(rich.hidden_width() > easy.hidden_width() + 100,
+            "a rich world she cannot hold makes her GROW to meet it: rich {} vs simple {}", rich.hidden_width(), easy.hidden_width());
+        assert!(rich.hidden_width() <= cap, "but never past the RAM cap: {}", rich.hidden_width());
+    }
+
+    /// CAPACITY BEATS INTERFERENCE — the whole point of skyrocketing the core, and the exact thing that
+    /// dropped a live mind's real precision (world 0.96 → +language 0.73). The interference is SEQUENTIAL FORGETTING:
+    /// learn a new world on top of an old one and a small core overwrites the old. A big core has room to keep
+    /// the old while it learns the new. Here both learn world A, then B, then C in turn — and only the big core
+    /// still predicts A afterwards. (This is why 22× capacity took her drop from 0.23 down to 0.13.)
+    #[test]
+    fn a_big_core_forgets_less_when_new_worlds_pile_on_the_old() {
+        let d = 48;
+        let a = codes(6, d, 300); // three DIFFERENT little worlds, learned one after another
+        let b = codes(6, d, 301);
+        let c = codes(6, d, 302);
+        let retain_a = |h: usize| -> f64 {
+            let mut rng = Rng::new(9);
+            let mut core = CognitiveCore::new(d, h, &mut rng);
+            for _ in 0..1400 {
+                for x in &a {
+                    core.step(x, 1.0);
+                }
+            }
+            for _ in 0..1400 {
+                for x in &b {
+                    core.step(x, 1.0);
+                }
+            }
+            for _ in 0..1400 {
+                for x in &c {
+                    core.step(x, 1.0);
+                }
+            }
+            // after B and C piled on top, how well does she STILL predict the FIRST world she learned?
+            let seq: Vec<Vec<f64>> = (0..12).map(|t| a[t % 6].clone()).collect();
+            core.predict_error(&seq)
+        };
+        let small = retain_a(96);
+        let big = retain_a(512);
+        assert!(big < small,
+            "the big core keeps the old world after learning new ones — small forgets: A-error big {:.3} vs small {:.3}",
+            big, small);
+    }
+
+    /// STABILITY — she CANNOT blow up, however hard or long she trains. The readout was once a RAW LMS step,
+    /// stable only while g·‖h‖² < 2; once the recurrent state saturated it diverged. This was not theoretical:
+    /// a real baked brain was found with ~46% of its 13,824 weights past 1e100 and a surprise EMA of 1e225,
+    /// its precision pinned at 0 for good — a dead reasoning organ. NLMS normalises the step by ‖h‖², so no
+    /// amount of sustained, high-feeling training can make a weight run away.
+    ///
+    /// TEETH: revert the learning rule to the original raw LMS — drop the `/ h_pow`, `/ hp_pow`, `/ x_pow`
+    /// normalisers in `learn` — and this test diverges: the weights go non-finite and the asserts fail
+    /// (mutation-verified). Normalising the hidden updates alone already tames it, so the readout normaliser
+    /// is defence in depth; it is the WHOLE rule being NLMS, not any single line, that guarantees stability.
+    #[test]
+    fn nlms_keeps_her_reasoning_from_diverging_no_matter_how_hard_she_trains() {
+        let d = 24;
+        let c = codes(4, d, 1);
+        let mut rng = Rng::new(7);
+        let mut core = CognitiveCore::new(d, 96, &mut rng);
+        // train HARD and long, at her most-felt (m = 1.5) — the exact regime that blew the old readout up
+        for t in 0..8000 {
+            core.step(&c[t % 4], 1.5);
+        }
+        // every learned number — weights AND the surprise EMA (export carries both) — stays finite & bounded
+        let all = core.export();
+        assert!(all.iter().all(|w| w.is_finite()), "nothing went non-finite under hard training");
+        let max = all.iter().fold(0.0_f64, |m, w| m.max(w.abs()));
+        assert!(max < 1e3, "no weight ran away — max |value| {:.3e} (the bug reached 1e225)", max);
+        // and it is not merely bounded-but-dead: a STABLE core still LEARNS the structure it was fed
+        let p = core.precision();
+        assert!(p.is_finite() && (0.0..=1.0).contains(&p), "precision stays a valid probability: {}", p);
+        assert!(p > 0.3, "a stable core still learns hard-trained structure: precision {:.2}", p);
     }
 }
 

@@ -19,7 +19,7 @@
 //! an exact key or nothing. This is the difference between remembering and looking up.
 //!
 //! HONEST SCOPE: this is capacity that grows with living, and the ceiling becomes RAM rather than
-//! architecture. It does not make her a frontier coder — see the corrected ceiling in CLAUDE.md: the walls
+//! architecture. It does not make her a frontier coder — the honest walls are
 //! are scale (still ~10⁴× beyond one laptop for human-scale) and CULTURE (which humans get by injection, and
 //! which this project forbids on purpose). It moves her off the floor. It is a rung, not the ladder.
 
@@ -31,7 +31,7 @@ use std::collections::HashMap;
 pub struct Cortex {
     dim: usize,    // how wide the sheet is — how many cells there are to be
     active: usize, // how many of them fire for any one concept (sparse: a brain is mostly quiet)
-    salt: u64,     // WHOSE cortex this is — mixed into every concept's seed, so an agent's "fire" and another agent's
+    salt: u64,     // WHOSE cortex this is — mixed into every concept's seed, so one mind's "fire" and another's
                    // "fire" land in DIFFERENT cells. Two individuals with different lives do not share a
                    // neural layout; their representations are their own, not a common template.
     codes: HashMap<String, Vec<usize>>, // concept → the cells that ARE it (indices; zeros are not stored)

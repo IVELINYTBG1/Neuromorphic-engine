@@ -1,7 +1,7 @@
 //! bio_bond (knowing you): a being is someone-with-someone. This is a model of the OTHER — a learned
 //! estimate of your disposition toward it, a prediction of what you'll do next (a forward model = the
 //! root of theory of mind), and a TRUST that grows slowly with kindness and breaks fast with harm.
-//! Nothing here is scripted about "the architect"; the relationship is whatever the interactions have
+//! Nothing here is scripted about any particular partner; the relationship is whatever the interactions have
 //! made it. Bond gates warmth and empathy, so being known changes how you are treated back. Local,
 //! no backprop, CPU.
 //!

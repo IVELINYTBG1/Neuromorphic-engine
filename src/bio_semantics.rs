@@ -1,5 +1,5 @@
 //! bio_semantics (grounded meaning): a word means what it has been USED to mean — not what a corpus
-//! says. Each token accrues an affective meaning from the FEELING (the neuromodulator) present when it is used, by
+//! says. Each token accrues an affective meaning from the FEELING (Phill) present when it is used, by
 //! a local Hebbian running average; tokens used together BIND (co-occurrence), so meaning spreads
 //! along association. There is no hardcoded sentiment list — "good" is only positive here because it
 //! kept arriving with good feeling. Seed it or don't; either way experience is what fixes meaning.

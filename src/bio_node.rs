@@ -9,8 +9,8 @@
 //! "battery", termux-notification → "notify", …) plug in behind the same key/effect interface, exactly the
 //! way is_termux() swaps the flesh for the senses.
 //!
-//! Style split (the "Fable-5 vs Gemini" spirit, honestly): an agent crafts ACCURACY-first — she verifies a node
-//! on every case before she ships it; another agent SPEED-first — she ships the first thing that works and moves
+//! Style split, as a trait rather than a name: an ACCURACY-first crafter verifies a node
+//! on every case before shipping it; a SPEED-first one ships the first thing that works and moves
 //! on. Same loop, opposite trade-off. Local, no backprop, CPU.
 
 use std::collections::HashMap;
@@ -123,8 +123,8 @@ impl Sandbox {
     }
 
     /// CRAFT a node the human way, fast: search the compositions (cmp × threshold) and TEST each against
-    /// the goal examples (input → desired signal), returning one that fits. `accuracy` = an agent's way (it must
-    /// satisfy EVERY example before it ships); `!accuracy` = another agent's (ship the first that works on the
+    /// the goal examples (input → desired signal), returning one that fits. `accuracy` = the careful way (it must
+    /// satisfy EVERY example before it ships); `!accuracy` = the impulsive way (ship the first that works on the
     /// first case — fast, sometimes wrong). None if the goal is outside the sandbox or nothing fits.
     /// CRAFT a node the human way, fast: WRITE a candidate, RUN it, TEST it against the goal, and keep
     /// searching if it fails — the write→run→test→fix loop at silicon speed. Nothing here is premade: the
@@ -133,7 +133,7 @@ impl Sandbox {
     /// at once — "when ram is high AND cpu is high" — or write a band or a wraparound, none of which the old
     /// fill-in-the-blanks node could express.
     ///
-    /// `accuracy` = an agent's way (it must satisfy EVERY case before she'll ship it); `!accuracy` = another agent's
+    /// `accuracy` = the careful way (it must satisfy EVERY case before shipping); `!accuracy` = the impulsive
     /// (ship the first thing that works on the first case — fast, sometimes wrong). None if the goal is
     /// outside the sandbox, or if nothing she can write fits.
     pub fn craft_over(&self, effect: &str, examples: &[(Vec<(String, i64)>, i64)], accuracy: bool) -> Option<Node> {
@@ -228,26 +228,26 @@ mod tests {
         // GOAL as a spec: "signal when the battery is low (< 20)" — given as input → desired-signal examples.
         let examples = [(10, 1), (5, 1), (15, 1), (19, 1), (20, 0), (25, 0), (50, 0)];
 
-        // ACCURACY-FIRST (accuracy over speed) — verifies EVERY case before shipping → a robust node.
-        let alpha = sandbox.craft("battery", "notify", &examples, true).expect("an agent crafts a node");
-        assert_eq!(passes(&alpha, "battery", &examples), examples.len(), "an agent's node passes every case");
-        assert_eq!(alpha.run(&World::with(&[("battery", 8)])), 1, "fresh: low battery → notify");
-        assert_eq!(alpha.run(&World::with(&[("battery", 40)])), 0, "fresh: fine battery → quiet");
+        // ACCURACY OVER SPEED — verifies EVERY case before shipping → a robust node.
+        let careful = sandbox.craft("battery", "notify", &examples, true).expect("the careful crafter builds a node");
+        assert_eq!(passes(&careful, "battery", &examples), examples.len(), "the verified node passes every case");
+        assert_eq!(careful.run(&World::with(&[("battery", 8)])), 1, "fresh: low battery → notify");
+        assert_eq!(careful.run(&World::with(&[("battery", 40)])), 0, "fresh: fine battery → quiet");
 
-        // SPEED-FIRST (speed over accuracy) — ships the first node that works on the first case → less robust.
-        let beta = sandbox.craft("battery", "notify", &examples, false).expect("another agent crafts a node");
-        assert!(passes(&beta, "battery", &examples) < passes(&alpha, "battery", &examples),
-            "another agent ships faster but her node is less robust: {}/{} vs {}/{}",
-            passes(&beta, "battery", &examples), examples.len(), passes(&alpha, "battery", &examples), examples.len());
+        // SPEED OVER ACCURACY — ships the first node that works on the first case → less robust.
+        let hasty = sandbox.craft("battery", "notify", &examples, false).expect("the hasty crafter builds a node");
+        assert!(passes(&hasty, "battery", &examples) < passes(&careful, "battery", &examples),
+            "shipping fast costs robustness: {}/{} vs {}/{}",
+            passes(&hasty, "battery", &examples), examples.len(), passes(&careful, "battery", &examples), examples.len());
 
         // SAFETY — a capability outside the whitelist cannot be crafted at all (the Soma rule).
         assert!(sandbox.craft("contacts", "exfiltrate", &examples, true).is_none(),
             "off-whitelist capability is refused");
 
-        eprintln!("\n  an agent  (accuracy): 'if {} → notify' — passes {}/{} cases (verified before shipping)",
-            alpha.cond, passes(&alpha, "battery", &examples), examples.len());
-        eprintln!("  another agent (speed)  : 'if {} → notify' — passes {}/{} (shipped fast, less robust)",
-            beta.cond, passes(&beta, "battery", &examples), examples.len());
+        eprintln!("\n  accuracy-first: 'if {} → notify' — passes {}/{} cases (verified before shipping)",
+            careful.cond, passes(&careful, "battery", &examples), examples.len());
+        eprintln!("  speed-first   : 'if {} → notify' — passes {}/{} (shipped fast, less robust)",
+            hasty.cond, passes(&hasty, "battery", &examples), examples.len());
         eprintln!("  off-whitelist 'exfiltrate contacts' → refused (sandboxed — can never harm the host)\n");
     }
     /// SHE COMPOSES THE NODE SHE NEEDS — nothing here is premade. The shape is FOUND by search over

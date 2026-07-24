@@ -89,6 +89,25 @@ impl SleepCycle {
         if self.phase < nrem_frac { Stage::Nrem } else { Stage::Rem }
     }
 
+    /// How DEEP her NREM is right now (0 = light drowse, 1 = deep slow-wave). Deep sleep dominates the EARLY
+    /// cycles of the night (high homeostatic pressure, early in the ultradian phase) and gives way to lighter
+    /// NREM and more REM as the night wears on — the human structure. 0 while awake or in REM.
+    pub fn depth(&self) -> f64 {
+        if !self.asleep || matches!(self.stage(), Stage::Rem) {
+            return 0.0;
+        }
+        (self.pressure * (1.0 - 1.6 * self.phase)).clamp(0.0, 1.0)
+    }
+    /// Her sleep in one human word — for telemetry: awake / drowsing / deep sleep / dreaming (REM).
+    pub fn stage_word(&self) -> &'static str {
+        match self.stage() {
+            Stage::Wake => "awake",
+            Stage::Rem => "dreaming (REM)",
+            Stage::Nrem if self.depth() > 0.5 => "deep sleep (slow-wave)",
+            Stage::Nrem => "drowsing (light NREM)",
+        }
+    }
+
     pub fn fall_asleep(&mut self) {
         self.asleep = true;
         self.phase = 0.0;

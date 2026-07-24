@@ -6,7 +6,17 @@ rules on the CPU. No training loop over a frozen corpus, no gradient descent, no
 online, from its own stream, the way a brain does.
 
 Each `src/bio_*.rs` module is one self-contained, tested cell (a docstring explaining the biology → math, plus
-a `#[cfg(test)]` self-test). **66 cells, 75 tests green.**
+a `#[cfg(test)]` self-test). **66 cells, 78 tests green.**
+
+## Scope
+
+This is the **engine** — the architecture, and nothing that was built on top of it. There are no
+personalities here, no identities, no trained weights, no memories, no world: every module is a mechanism
+with its own self-test, so you can read one cell and see exactly what it claims and how it is checked.
+Anything that would make it a *particular* mind — persona traits, baked brains, learned lexicons, the
+entity-component world it can be embodied in — is deliberately not part of this repository.
+
+Nothing is pre-trained. A cell starts empty and learns from whatever stream you give it.
 
 ## What's inside (the families)
 
@@ -30,7 +40,8 @@ a `#[cfg(test)]` self-test). **66 cells, 75 tests green.**
   D-serine gating, lactate shuttle).
 - **Higher cells** — a **grown cortex** where a concept is a sparse population and pathways are built by
   living (`bio_cortex`); a **learned predictive-recurrent reasoning core** — online, local, feeling-gated,
-  with an emergent certainty/precision signal (`bio_cognition`); grounded semantics (`bio_semantics`),
+  with an emergent certainty/precision signal, and a hidden layer that **grows itself** when precision
+  plateaus and stops when more capacity no longer helps (`bio_cognition`); grounded semantics (`bio_semantics`),
   grammar (`bio_grammar`), a tiny action-DSL (`bio_code`) and sandboxed effectors (`bio_node`); plus two
   integration capstones (`bio_organism`, `bio_being`).
 
@@ -38,7 +49,7 @@ a `#[cfg(test)]` self-test). **66 cells, 75 tests green.**
 
 ```
 cargo build --release
-cargo test --release      # 75 tests
+cargo test --release      # 78 tests
 ```
 
 ## License
